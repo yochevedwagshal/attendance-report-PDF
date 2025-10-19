@@ -11,11 +11,11 @@ import pandas as pd
 import re
 import cv2
 import numpy as np
+from mutate import normalize_report_a
+from generate_pdf import create_pdf_from_text
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-
-
-# --- 1. בדיקה אם PDF הוא טקסטואלי (שכבת טקסט) ---
+#הוא טקסטואלי (שכבת טקסט) PDF בדיקה אם ה 
 def is_textual_pdf(path: str, min_text_len: int = 20) -> bool:
     """
     פותח את ה-PDF עם pdfplumber ומחפש האם קיימת כמות משמעותית של טקסט בעמודים.
@@ -47,33 +47,7 @@ def extract_text_from_textual_pdf(path: str) -> str:
     except Exception as e:
         print(f"[extract_text_from_textual_pdf] error: {e}", file=sys.stderr)
     return all_text.strip()
-#מתקן את הזווית של התמונה עובד?????????
-def preprocess_image_for_ocr(pil_image):
-    """
-    מבצע תיקון זוית, שיפור קונטרסט והפיכת התמונה לשחור-לבן.
-    """
-    # המרה ל־OpenCV
-    img = np.array(pil_image.convert('L'))  # גווני אפור
 
-    # בינאריזציה (שחור-לבן חזק)
-    _, thresh = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # תיקון זוית (deskew)
-    coords = np.column_stack(np.where(thresh < 255))
-    angle = cv2.minAreaRect(coords)[-1]
-    print(f"Detected angle: {angle}")
-    if angle < -45:
-        angle = -(90 + angle)
-    else:
-        angle = -angle
-
-    (h, w) = thresh.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(thresh, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    Image.fromarray(rotated).save("debug_rotated.png")
-    print("Saved debug_rotated.png for inspection.")
-    return Image.fromarray(rotated)
 # --- חילוץ טקסט מדף סרוק (OCR) ---
 def extract_text_from_scanned_pdf(path: str, dpi: int = 300, lang: str = "heb+eng") -> str:
     """
@@ -89,15 +63,21 @@ def extract_text_from_scanned_pdf(path: str, dpi: int = 300, lang: str = "heb+en
         )
 
         for i, img in enumerate(images):
-            processed = preprocess_image_for_ocr(img)
-
-            text = pytesseract.image_to_string(processed, lang=lang)
+            # המרה ל-numpy array
+            img_cv = np.array(img)
+            # המרה לגווני אפור
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            # סינון רעש וחידוד קונטרסט
+            gray = cv2.medianBlur(gray, 3)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            text = pytesseract.image_to_string(thresh, lang=lang)
             all_text += text + "\n"
     except Exception as e:
         print(f"[extract_text_from_scanned_pdf] error: {e}", file=sys.stderr)
     return all_text.strip()
 
-
+#מזהה האם הדף מסוג A או B
 def detect_report_type(text: str) -> str:
   
     text_lower = text.lower()
@@ -112,7 +92,10 @@ def detect_report_type(text: str) -> str:
         "סהכ לתשלום",
         "סיכום שעות",
         "תשלום",
-        "חודש"
+        "חודש",
+        "שעת כניסה",
+        "שעת יציאה"
+        
     ]
 
     a_score = sum(1 for word in company_keywords if word in text_lower)
@@ -126,41 +109,46 @@ def detect_report_type(text: str) -> str:
         return "Unknown"
 
 
-
-# --- פונקציה מאוחדת לחילוץ וזיהוי ---
+# --- פונקציה כללית המפעילה את שאר הפונקציות  ---
 def process_pdf(path: str):
-    """
-    מקבלת קובץ PDF והאם הוא טקסטואלי או סרוק.
-    מחזירה dict עם טקסט וסוג הדוח.
-    """
+    #is_textual_pdf שליחה ל 
     is_textual=is_textual_pdf(path)
-    print(is_textual)
+    print(f"הדף טקסטואלי: {is_textual}")
     if is_textual:
         text = extract_text_from_textual_pdf(path)
-        # print(text)
-        
     else:
         text = extract_text_from_scanned_pdf(path)
-        print(text)
-
-
+        
+    #שליחה לפונקציה הבודקת מאיזה סוג המסמך
     report_type = detect_report_type(text)
 
+    normalized = None
+    if report_type == "A":
+        #mutate.py   שליחה  לפונקציה בקובץ Aאם המסמך מסוג   
+        normalized = normalize_report_a(text)
+        #חדש עם התוכן המתוקן PFD יצירת קובץ
+        output_path = path.replace(".pdf", "_fixed.pdf")
+        create_pdf_from_text(output_path, text, normalized)
+        print("\n===== טקסט לאחר תיקון =====\n")
+        print(normalized)
+        print("\n============================\n")
+
+    
     return {
         "file": os.path.basename(path),
         "is_textual": is_textual,
         "report_type": report_type,
-        "preview": text[:300]  # הצצה ל-300 תווים ראשונים
+        "preview": text[:300],
+        "normalized": normalized,
     }
 
 
 # --- דוגמה לשימוש ---
 if __name__ == "__main__":
-    # path = r"C:\Users\ALTER\Desktop\כבי וגשל\taskToSendInPython\data\lesson1.pdf"
-    # path = r"C:\Users\ALTER\Desktop\כבי וגשל\taskToSendInPython\data\a_r_9.pdf"
-    # path = r"C:\Users\ALTER\Desktop\כבי וגשל\taskToSendInPython\data\a_r_25.pdf"
-    # path = r"C:\Users\ALTER\Desktop\כבי וגשל\taskToSendInPython\data\n_r_5_n.pdf"
-    # path = r"C:\Users\ALTER\Desktop\כבי וגשל\taskToSendInPython\data\n_r_10_n.pdf"
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(BASE_DIR, "data", "a_r_9.pdf")
+    # path = os.path.join(BASE_DIR, "data", "a_r_25.pdf")
+    # path = os.path.join(BASE_DIR, "data", "n_r_5_n.pdf")
+    # path = os.path.join(BASE_DIR, "data", "n_r_10_n.pdf")
 
     result = process_pdf(path)
-    print(result)
